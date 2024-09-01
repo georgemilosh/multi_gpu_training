@@ -10,6 +10,8 @@ import os
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from socket import gethostname
+import time
+import csv
 
 class Net(nn.Module):
     def __init__(self):
@@ -36,7 +38,8 @@ class Net(nn.Module):
         output = F.log_softmax(x, dim=1)
         return output
 
-def train(args, model, device, train_loader, optimizer, epoch):
+def train(args, model, rank, device, train_loader, optimizer, epoch):
+    start_time = time.time()
     model.train()
     for batch_idx, (data, target) in enumerate(train_loader):
         data, target = data.to(device), target.to(device)
@@ -46,13 +49,13 @@ def train(args, model, device, train_loader, optimizer, epoch):
         loss.backward()
         optimizer.step()
         if batch_idx % args.log_interval == 0:
-            print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
-                epoch, batch_idx * len(data), len(train_loader.dataset),
-                100. * batch_idx / len(train_loader), loss.item()))
+            print(f'Train Epoch: {epoch} | {rank = }, {device = } | [{batch_idx * len(data)}/{len(train_loader.dataset)} ({100. * batch_idx / len(train_loader):.0f}%)]\tLoss: {loss.item():.6f}')
             if args.dry_run:
                 break
+    print(f"Epoch {epoch} | {rank = }, {device = } | Training completed in {time.time() - start_time:.2f} seconds")
 
-def test(model, device, test_loader):
+def test(model, rank, device, test_loader):
+    start_time = time.time()
     model.eval()
     test_loss = 0
     correct = 0
@@ -66,15 +69,20 @@ def test(model, device, test_loader):
 
     test_loss /= len(test_loader.dataset)
 
-    print('\nTest set: Average loss: {:.4f}, Accuracy: {}/{} ({:.0f}%)\n'.format(
-        test_loss, correct, len(test_loader.dataset),
-        100. * correct / len(test_loader.dataset)))
+    print(f'\nTest set: Average loss: {test_loss:.4f}, Accuracy: {correct}/{len(test_loader.dataset)} ({100. * correct / len(test_loader.dataset):.0f}%)\n')
+    print(f"| {rank = }, {device = } | Testing completed in {time.time() - start_time:.2f} seconds")
 
 def setup(rank, world_size):
     # initialize the process group
     dist.init_process_group("nccl", rank=rank, world_size=world_size)
 
 def main():
+    def create_empty_csv(file_path):
+        with open(file_path, 'w', newline='') as csvfile:
+            writer = csv.writer(csvfile)
+            writer.writerow(['Host', 'Rank', 'Local Rank', 'Time'])
+
+    
     # Training settings
     parser = argparse.ArgumentParser(description='PyTorch MNIST Example')
     parser.add_argument('--batch-size', type=int, default=64, metavar='N',
@@ -97,7 +105,14 @@ def main():
                         help='how many batches to wait before logging training status')
     parser.add_argument('--save-model', action='store_true', default=False,
                         help='For Saving the current Model')
+    parser.add_argument('--timing_name', type=str, default=False,
+                        help='Name of the timing file')
     args = parser.parse_args()
+
+    # Call the function to create an empty CSV file
+    if args.timing_name:
+        create_empty_csv(args.timing_name)
+
     use_cuda = not args.no_cuda and torch.cuda.is_available()
 
     torch.manual_seed(args.seed)
@@ -117,11 +132,11 @@ def main():
         ])
     dataset1 = datasets.MNIST('data',
                               train=True,
-                              download=False,
+                              download=True,
                               transform=transform)
     dataset2 = datasets.MNIST('data',
                               train=False,
-                              download=False,
+                              download=True,
                               transform=transform)
 
     world_size = int(os.environ["WORLD_SIZE"])
@@ -154,10 +169,17 @@ def main():
     optimizer = optim.Adadelta(ddp_model.parameters(), lr=args.lr)
 
     scheduler = StepLR(optimizer, step_size=1, gamma=args.gamma)
+    start_time = time.time()
     for epoch in range(1, args.epochs + 1):
-        train(args, ddp_model, local_rank, train_loader, optimizer, epoch)
-        if rank == 0: test(ddp_model, local_rank, test_loader)
+        train(args, ddp_model, rank, local_rank, train_loader, optimizer, epoch)
+        if rank == 0: test(ddp_model, rank, local_rank, test_loader)
         scheduler.step()
+    print(f"Total train/val time on host: {gethostname()}, rank: {rank}, local_rank: {local_rank} | Training time {time.time() - start_time:.2f} seconds ")
+    # Record information into CSV file
+    if args.timing_name:
+        with open(args.timing_name, 'a', newline='') as csvfile:
+            writer = csv.writer(csvfile)
+            writer.writerow([gethostname(), rank, local_rank, time.time() - start_time])
 
     if args.save_model and rank == 0:
         torch.save(model.state_dict(), "mnist_cnn.pt")
