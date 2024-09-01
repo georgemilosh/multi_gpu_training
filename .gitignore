@@ -3,3 +3,5 @@
 *.pt
 *.log
 *.csv
+*.gz
+**/data/** 
