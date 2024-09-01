@@ -15,7 +15,7 @@
 
 ### change 5-digit MASTER_PORT as you wish, slurm will raise Error if duplicated with others
 ### change WORLD_SIZE as gpus/node * num_nodes
-export MASTER_PORT=12340 #$(get_free_port)
+export MASTER_PORT=12340 #$(get_free_port)  ### the original script had $(get_free_port) but it was not recognized
 export WORLD_SIZE=$(($SLURM_NNODES * $SLURM_NTASKS_PER_NODE))
 echo "WORLD_SIZE="$WORLD_SIZE
 echo "MASTER_PORT="$MASTER_PORT
@@ -24,10 +24,11 @@ master_addr=$(scontrol show hostnames "$SLURM_JOB_NODELIST" | head -n 1)
 export MASTER_ADDR=$master_addr
 echo "MASTER_ADDR="$MASTER_ADDR
 
-#module purge
-#module load anaconda3/2023.9
-#conda activate torch-env
+
+#module load cluster/genius/gpu_p100
+#module load PyTorch/2.1.2-foss-2023a-CUDA-12.1.1
+
 source ~/.bashrc
 mamba activate huggingface_hub
 
-srun python mnist_classify_ddp.py --epochs=2 --timing_name "time4nodes2gpu.csv"
+srun python mnist_classify_ddp.py --epochs=2 --timing_name "time${SLURM_NNODES}nodes${SLURM_NTASKS_PER_NODE}tasks${SLURM_CPUS_PER_TASK}cpus.csv"
